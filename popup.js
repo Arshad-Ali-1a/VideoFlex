@@ -1,3 +1,25 @@
+const enabledToggle = document.getElementById("extension-enabled");
+
+chrome.storage.local.get(["extensionEnabled"], (result) => {
+  enabledToggle.checked = result.extensionEnabled !== false;
+});
+
+enabledToggle.addEventListener("change", () => {
+  const enabled = enabledToggle.checked;
+  chrome.storage.local.set({ extensionEnabled: enabled });
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs || !tabs[0]) return;
+    chrome.tabs.sendMessage(
+      tabs[0].id,
+      { action: "set_enabled", enabled },
+      () => {
+        // Ignore pages where content scripts cannot run.
+        void chrome.runtime.lastError;
+      },
+    );
+  });
+});
+
 document.getElementById("clear-storage").addEventListener("click", () => {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs && tabs[0] && tabs[0].url) {

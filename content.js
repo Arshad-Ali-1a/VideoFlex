@@ -3,6 +3,22 @@
 
   // Map to store active controllers for discovered videos
   const activeControllers = new Map();
+  let extensionEnabled = true;
+
+  chrome.storage.local.get(["extensionEnabled"], (result) => {
+    extensionEnabled = result.extensionEnabled !== false;
+    activeControllers.forEach((controller) => {
+      controller.setEnabled(extensionEnabled);
+    });
+  });
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local" || !changes.extensionEnabled) return;
+    extensionEnabled = changes.extensionEnabled.newValue !== false;
+    activeControllers.forEach((controller) => {
+      controller.setEnabled(extensionEnabled);
+    });
+  });
 
   // Default values
   const DEFAULTS = {
@@ -18,6 +34,8 @@
   document.addEventListener(
     "keydown",
     (e) => {
+      if (!extensionEnabled) return;
+
       // Skip shortcut processing if user is typing in form inputs/editable elements
       const activeEl = document.activeElement;
       if (
@@ -45,37 +63,45 @@
       if (e.key === "[") {
         e.preventDefault();
         controller.adjustValue("scale", -5);
-        controller.showTemporaryToast(`Scale: ${controller.state.scale}%`);
+        controller.showTemporaryToast(
+          `Scale decreased: ${controller.state.scale}%`,
+        );
       }
       // ] : Scale up (+5%)
       else if (e.key === "]") {
         e.preventDefault();
         controller.adjustValue("scale", 5);
-        controller.showTemporaryToast(`Scale: ${controller.state.scale}%`);
+        controller.showTemporaryToast(
+          `Scale increased: ${controller.state.scale}%`,
+        );
       }
       // \ : Reset scale (100%)
       else if (e.key === "\\") {
         e.preventDefault();
         controller.setValue("scale", 100);
-        controller.showTemporaryToast(`Scale: 100%`);
+        controller.showTemporaryToast("Scale reset: 100%");
       }
       // Shift + [ : Speed Down (-0.25x)
       else if (e.shiftKey && e.key === "{") {
         e.preventDefault();
         controller.adjustValue("speed", -0.1);
-        controller.showTemporaryToast(`Speed: ${controller.state.speed}x`);
+        controller.showTemporaryToast(
+          `Speed decreased: ${controller.state.speed}x`,
+        );
       }
       // Shift + ] : Speed Up (+0.1x)
       else if (e.shiftKey && e.key === "}") {
         e.preventDefault();
         controller.adjustValue("speed", 0.1);
-        controller.showTemporaryToast(`Speed: ${controller.state.speed}x`);
+        controller.showTemporaryToast(
+          `Speed increased: ${controller.state.speed}x`,
+        );
       }
       // Alt + B : Reset all filters
       else if (e.altKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
         controller.resetAll();
-        controller.showTemporaryToast(`All video filters & scale reset`);
+        controller.showTemporaryToast("All video controls reset");
       }
     },
     true,
@@ -104,6 +130,7 @@
   }
 
   function initVideoController(video) {
+    if (!extensionEnabled) return;
     if (activeControllers.has(video)) return;
     const controller = new VideoController(video);
     activeControllers.set(video, controller);
@@ -116,6 +143,13 @@
       this.menuOpen = false;
       this.activeSubmenu = null; // 'scale', 'brightness', 'contrast', 'saturate', 'sepia', 'speed'
       this.toastTimeout = null;
+      this.enabled = true;
+      this.originalStyles = {
+        transform: video.style.transform,
+        transformOrigin: video.style.transformOrigin,
+        filter: video.style.filter,
+      };
+      this.originalPlaybackRate = video.playbackRate;
 
       this.hostname = window.location.hostname;
       this.handleFullscreenChange = () => this.syncFullscreenHost();
@@ -160,6 +194,8 @@
     }
 
     applySettings() {
+      if (!this.enabled) return;
+
       // 1. Transform / Scale
       this.video.style.transform = `scale(${this.state.scale / 100})`;
       this.video.style.transformOrigin = "center center";
@@ -212,6 +248,29 @@
       this.saveSettings();
     }
 
+    setEnabled(enabled) {
+      if (this.enabled === enabled && (enabled ? this.host : !this.host)) {
+        return;
+      }
+
+      this.enabled = enabled;
+      if (!enabled) {
+        this.menuOpen = false;
+        this.video.style.transform = this.originalStyles.transform;
+        this.video.style.transformOrigin = this.originalStyles.transformOrigin;
+        this.video.style.filter = this.originalStyles.filter;
+        this.video.playbackRate = this.originalPlaybackRate;
+        if (this.host) {
+          this.host.remove();
+          this.host = null;
+        }
+        return;
+      }
+
+      this.buildUI();
+      this.applySettings();
+    }
+
     toggleMenu() {
       this.menuOpen = !this.menuOpen;
       if (this.menuOpen) {
@@ -228,6 +287,7 @@
     showTemporaryToast(message) {
       if (!this.toast) return;
       this.toast.textContent = message;
+      this.toast.style.display = "block";
       this.toast.classList.add("visible");
 
       if (this.toastTimeout) {
@@ -236,10 +296,13 @@
 
       this.toastTimeout = setTimeout(() => {
         this.toast.classList.remove("visible");
+        this.toast.style.display = "none";
       }, 1500);
     }
 
     buildUI() {
+      if (this.host) return;
+
       // Create Shadow DOM host container
       this.host = document.createElement("div");
       this.host.className = "vsc-shadow-host";
@@ -464,10 +527,10 @@
 
         /* HUD / Toast Notification for Quick Changes */
         .vsc-toast {
-          position: absolute;
-          top: 20px;
+            position: fixed;
+            top: 50%;
           left: 50%;
-          transform: translateX(-50%) translateY(-10px);
+            transform: translateX(-50%) translateY(calc(-50% - 10px));
           background: rgba(0, 0, 0, 0.85);
           color: #ffffff;
           padding: 8px 16px;
@@ -475,6 +538,7 @@
           font-size: 13px;
           font-weight: 500;
           opacity: 0;
+          display: none;
           pointer-events: none;
           transition: opacity 0.2s, transform 0.2s;
           border: 1px solid rgba(255, 255, 255, 0.1);
@@ -482,7 +546,7 @@
         }
         .vsc-toast.visible {
           opacity: 1;
-          transform: translateX(-50%) translateY(0);
+          transform: translateX(-50%) translateY(-50%);
         }
       `;
       this.shadow.appendChild(style);
@@ -751,6 +815,16 @@
 
   // Handle messages from the extension popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message && message.action === "set_enabled") {
+      extensionEnabled = message.enabled === true;
+      chrome.storage.local.set({ extensionEnabled });
+      activeControllers.forEach((controller) => {
+        controller.setEnabled(extensionEnabled);
+      });
+      sendResponse({ enabled: extensionEnabled });
+      return;
+    }
+
     if (message && message.action === "reset_styles") {
       activeControllers.forEach((controller) => {
         controller.resetAll();
