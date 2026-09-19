@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
-    "name": "Video Aspect & Filter Controller",
+    "name": "VideoFlex - Advanced video controls",
     "version": "1.0.0",
-    "description": "Premium overlay & hotkeys to scale (remove black bars) and adjust filters (brightness, contrast, saturation, sepia, speed) on YouTube, Netflix, Prime and any other video player.",
+    "description": "Resize HTML5 videos without changing their aspect ratio, reduce black bars, adjust visual filters and playback speed, and control everything with an on-video menu or keyboard shortcuts.",
     "permissions": [
         "storage",
         "activeTab"
