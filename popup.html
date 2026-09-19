@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 320px;
+      margin: 0;
+      padding: 18px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #121212;
+      color: #e0e0e0;
+      user-select: none;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 12px;
+      margin-bottom: 14px;
+    }
+    .header svg {
+      width: 24px;
+      height: 24px;
+      fill: #38bdf8;
+    }
+    h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+    .desc {
+      font-size: 13px;
+      line-height: 1.4;
+      color: rgba(255, 255, 255, 0.7);
+      margin-bottom: 16px;
+    }
+    .shortcuts-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #38bdf8;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .shortcut-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .shortcut-table td {
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    .shortcut-table td:first-child {
+      font-weight: 500;
+      color: #ffffff;
+    }
+    .shortcut-table td:last-child {
+      text-align: right;
+    }
+    kbd {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 11px;
+      font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+      color: #38bdf8;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.4);
+    }
+    .footer {
+      margin-top: 18px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.4);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .reset-all-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 11px;
+      padding: 4px 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .reset-all-btn:hover {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg viewBox="0 0 24 24">
+      <path d="M12,18C9.79,18 8,16.21 8,14C8,11.79 9.79,10 12,10C14.21,10 16,11.79 16,14C16,16.21 14.21,18 12,18M20,15.31L23.31,12L20,8.69V4H15.31L12,0.69L8.69,4H4V8.69L0.69,12L4,15.31V20H8.69L12,23.31L15.31,20H20V15.31Z" />
+    </svg>
+    <h2>Aspect & Filter Controller</h2>
+  </div>
+
+  <div class="desc">
+    Hover over any video on YouTube, Netflix, Prime, etc., to toggle the controller panel, or use the dynamic shortcuts below.
+  </div>
+
+  <div class="shortcuts-title">Keyboard Shortcuts</div>
+  <table class="shortcut-table">
+    <tr>
+      <td>Toggle Menu</td>
+      <td><kbd>Alt</kbd> + <kbd>V</kbd></td>
+    </tr>
+    <tr>
+      <td>Increase Scale (+5%)</td>
+      <td><kbd>]</kbd></td>
+    </tr>
+    <tr>
+      <td>Decrease Scale (-5%)</td>
+      <td><kbd>[</kbd></td>
+    </tr>
+    <tr>
+      <td>Reset Scale (100%)</td>
+      <td><kbd>\</kbd></td>
+    </tr>
+    <tr>
+      <td>Increase Speed (+0.25)</td>
+      <td><kbd>Shift</kbd> + <kbd>}</kbd></td>
+    </tr>
+    <tr>
+      <td>Decrease Speed (-0.25)</td>
+      <td><kbd>Shift</kbd> + <kbd>{</kbd></td>
+    </tr>
+    <tr>
+      <td>Reset All Controls</td>
+      <td><kbd>Alt</kbd> + <kbd>B</kbd></td>
+    </tr>
+  </table>
+
+  <div class="footer">
+    <span>Site-specific auto save</span>
+    <button class="reset-all-btn" id="clear-storage">Reset Current Site</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

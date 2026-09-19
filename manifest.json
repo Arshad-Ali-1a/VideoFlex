@@ -1,0 +1,34 @@
+{
+    "manifest_version": 3,
+    "name": "Video Aspect & Filter Controller",
+    "version": "1.0.0",
+    "description": "Premium overlay & hotkeys to scale (remove black bars) and adjust filters (brightness, contrast, saturation, sepia, speed) on YouTube, Netflix, Prime and any other video player.",
+    "permissions": [
+        "storage",
+        "activeTab"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "icon.png",
+            "48": "icon.png",
+            "128": "icon.png"
+        }
+    },
+    "icons": {
+        "16": "icon.png",
+        "48": "icon.png",
+        "128": "icon.png"
+    }
+}
