@@ -96,6 +96,7 @@
 
     return (
       visibleVideos.find((video) => video.matches(":hover")) ||
+      visibleVideos.find((video) => video.matches(".jw-video")) ||
       visibleVideos.find((video) => !video.paused && !video.ended) ||
       visibleVideos[0] ||
       null
