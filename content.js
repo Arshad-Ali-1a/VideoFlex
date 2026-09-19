@@ -62,13 +62,13 @@
       // Shift + [ : Speed Down (-0.25x)
       else if (e.shiftKey && e.key === "{") {
         e.preventDefault();
-        controller.adjustValue("speed", -0.25);
+        controller.adjustValue("speed", -0.1);
         controller.showTemporaryToast(`Speed: ${controller.state.speed}x`);
       }
-      // Shift + ] : Speed Up (+0.25x)
+      // Shift + ] : Speed Up (+0.1x)
       else if (e.shiftKey && e.key === "}") {
         e.preventDefault();
-        controller.adjustValue("speed", 0.25);
+        controller.adjustValue("speed", 0.1);
         controller.showTemporaryToast(`Speed: ${controller.state.speed}x`);
       }
       // Alt + B : Reset all filters
@@ -118,15 +118,18 @@
 
       this.hostname = window.location.hostname;
       this.handleFullscreenChange = () => this.syncFullscreenHost();
+      this.handleViewportChange = () => this.updateHostPosition();
+      this.buildUI();
       this.loadSettings().then(() => {
         this.applySettings();
-        this.buildUI();
       });
 
       document.addEventListener(
         "fullscreenchange",
         this.handleFullscreenChange,
       );
+      window.addEventListener("resize", this.handleViewportChange);
+      window.addEventListener("scroll", this.handleViewportChange, true);
 
       // Track playbackRate changes to override page scripts if they attempt to change it
       this.video.addEventListener("ratechange", () => {
@@ -142,6 +145,10 @@
           if (result && result[this.hostname]) {
             this.state = { ...DEFAULTS, ...result[this.hostname] };
           }
+          this.state.speed = Math.max(
+            0.1,
+            Math.min(5.0, Number(this.state.speed) || 1),
+          );
           resolve();
         });
       });
@@ -177,7 +184,7 @@
       if (key === "speed") {
         this.setValue(
           key,
-          Math.max(0.25, Math.min(4.0, this.state.speed + delta)),
+          Math.max(0.1, Math.min(5.0, this.state.speed + delta)),
         );
       } else {
         const bounds = key === "sepia" ? [0, 100] : [50, 300];
@@ -235,11 +242,11 @@
       // Create Shadow DOM host container
       this.host = document.createElement("div");
       this.host.className = "vsc-shadow-host";
-      this.host.style.position = "absolute";
-      this.host.style.top = "0";
-      this.host.style.left = "0";
-      this.host.style.width = "100%";
-      this.host.style.height = "100%";
+      this.host.style.position = "fixed";
+      this.host.style.top = "0px";
+      this.host.style.left = "0px";
+      this.host.style.width = "0px";
+      this.host.style.height = "0px";
       this.host.style.pointerEvents = "none";
       this.host.style.zIndex = "2147483647"; // Highest possible z-index to stay on top
 
@@ -386,18 +393,20 @@
         .vsc-slider {
           -webkit-appearance: none;
           width: 100%;
-          height: 4px;
-          border-radius: 2px;
-          background: rgba(255, 255, 255, 0.2);
+          height: 6px;
+          border-radius: 3px;
+          background: #667085;
+          border: 1px solid rgba(255, 255, 255, 0.35);
           outline: none;
           margin-bottom: 16px;
         }
         .vsc-slider::-webkit-slider-thumb {
           -webkit-appearance: none;
-          width: 14px;
-          height: 14px;
+          width: 16px;
+          height: 16px;
           border-radius: 50%;
-          background: #ffffff;
+          background: #38bdf8;
+          border: 2px solid #ffffff;
           box-shadow: 0 0 4px rgba(0,0,0,0.5);
           cursor: pointer;
           transition: transform 0.1s;
@@ -519,15 +528,24 @@
 
       const fullscreenElement = document.fullscreenElement;
       const target =
-        fullscreenElement &&
-        fullscreenElement !== this.video &&
-        fullscreenElement.contains(this.video)
+        fullscreenElement && fullscreenElement.contains(this.video)
           ? fullscreenElement
-          : this.video.parentElement;
+          : document.body;
 
       if (!target || this.host.parentElement === target) return;
 
       target.appendChild(this.host);
+      this.updateHostPosition();
+    }
+
+    updateHostPosition() {
+      if (!this.host) return;
+
+      const rect = this.video.getBoundingClientRect();
+      this.host.style.top = `${rect.top}px`;
+      this.host.style.left = `${rect.left}px`;
+      this.host.style.width = `${rect.width}px`;
+      this.host.style.height = `${rect.height}px`;
     }
 
     renderMainMenu() {
@@ -574,21 +592,21 @@
       const capitalized = sub.charAt(0).toUpperCase() + sub.slice(1);
 
       if (sub === "speed") {
-        const speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
-        let optionsHTML = speeds
-          .map((spd) => {
-            const isActive = Math.abs(this.state.speed - spd) < 0.01;
-            const label = spd === 1.0 ? "Normal" : spd + "x";
-            return `<div class="vsc-speed-item ${isActive ? "active" : ""}" data-val="${spd}">${label}</div>`;
-          })
-          .join("");
-
         this.container.innerHTML = `
           <div class="vsc-header">
             <span class="vsc-header-back">‹</span> Speed
           </div>
-          <div class="vsc-speed-list">
-            ${optionsHTML}
+          <div class="vsc-slider-box">
+            <div class="vsc-slider-info">
+              <span>Range: 0.1x - 5x</span>
+              <span class="vsc-current-display">${this.state.speed}x</span>
+            </div>
+            <input type="range" class="vsc-slider" min="0.1" max="5" step="0.1" value="${this.state.speed}">
+            <div class="vsc-presets">
+              <button class="vsc-btn" id="btn-dec">- 0.1x</button>
+              <button class="vsc-btn" id="btn-inc">+ 0.1x</button>
+              <button class="vsc-btn" id="btn-reset">Normal</button>
+            </div>
           </div>
         `;
 
@@ -599,13 +617,35 @@
             this.renderMainMenu();
           });
 
-        this.container.querySelectorAll(".vsc-speed-item").forEach((item) => {
-          item.addEventListener("click", () => {
-            const val = parseFloat(item.getAttribute("data-val"));
-            this.setValue("speed", val);
-            this.renderSubmenu();
-          });
+        const slider = this.container.querySelector(".vsc-slider");
+        const display = this.container.querySelector(".vsc-current-display");
+        const updateSpeedUI = () => {
+          display.textContent = `${this.state.speed}x`;
+          slider.value = this.state.speed;
+        };
+
+        slider.addEventListener("input", (e) => {
+          this.setValue("speed", e.target.value);
+          updateSpeedUI();
         });
+        this.container
+          .querySelector("#btn-dec")
+          .addEventListener("click", () => {
+            this.adjustValue("speed", -0.1);
+            updateSpeedUI();
+          });
+        this.container
+          .querySelector("#btn-inc")
+          .addEventListener("click", () => {
+            this.adjustValue("speed", 0.1);
+            updateSpeedUI();
+          });
+        this.container
+          .querySelector("#btn-reset")
+          .addEventListener("click", () => {
+            this.setValue("speed", 1);
+            updateSpeedUI();
+          });
         return;
       }
 
