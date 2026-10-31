@@ -28,7 +28,20 @@
     saturate: 100,
     sepia: 0,
     speed: 1.0,
+    audioLevel: 100,
+    equalizerEnabled: false,
+    equalizerPreset: "Flat",
+    bass: 0,
+    mid: 0,
+    treble: 0,
   };
+  const EQUALIZER_PRESETS = {
+    Flat: { bass: 0, mid: 0, treble: 0 },
+    "Bass Boost": { bass: 8, mid: 1, treble: 0 },
+    Vocal: { bass: -2, mid: 4, treble: 3 },
+    "Treble Boost": { bass: -1, mid: 0, treble: 7 },
+  };
+  const TEMPORARY_BOOST_DELAY = 1000;
 
   // Global Key listeners for shortcuts
   document.addEventListener(
@@ -51,6 +64,12 @@
       if (!targetVideo) return;
       const controller = activeControllers.get(targetVideo);
       if (!controller) return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        controller.setTemporaryBoost("space", true);
+        return;
+      }
 
       // Alt + V: Toggle overlay menu
       if (e.altKey && e.key.toLowerCase() === "v") {
@@ -107,6 +126,47 @@
     true,
   );
 
+  document.addEventListener(
+    "keyup",
+    (e) => {
+      if (e.code === "Space") {
+        activeControllers.forEach((controller) => {
+          controller.setTemporaryBoost("space", false);
+        });
+      }
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      if (!extensionEnabled || e.button !== 0) return;
+      const targetVideo = getTargetVideo();
+      const controller = activeControllers.get(targetVideo);
+      if (controller) {
+        controller.applyAudioSettings(true);
+        controller.setTemporaryBoost("left-click", true);
+      }
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "mouseup",
+    (e) => {
+      if (e.button !== 0) return;
+      activeControllers.forEach((controller) => {
+        controller.setTemporaryBoost("left-click", false);
+      });
+    },
+    true,
+  );
+
+  window.addEventListener("blur", () => {
+    activeControllers.forEach((controller) => controller.clearTemporaryBoost());
+  });
+
   function getTargetVideo() {
     const videos = Array.from(document.querySelectorAll("video"));
     const visibleVideos = videos.filter((video) => {
@@ -143,6 +203,8 @@
       this.menuOpen = false;
       this.activeSubmenu = null; // 'scale', 'brightness', 'contrast', 'saturate', 'sepia', 'speed'
       this.toastTimeout = null;
+      this.temporaryBoostSources = new Set();
+      this.temporaryBoostTimers = new Map();
       this.enabled = true;
       this.originalStyles = {
         transform: video.style.transform,
@@ -150,6 +212,12 @@
         filter: video.style.filter,
       };
       this.originalPlaybackRate = video.playbackRate;
+      this.audioContext = null;
+      this.audioGain = null;
+      this.audioCompressor = null;
+      this.equalizerFilters = null;
+      this.audioProcessingError = false;
+      this.audioUnavailable = false;
 
       this.hostname = window.location.hostname;
       this.handleFullscreenChange = () => this.syncFullscreenHost();
@@ -168,8 +236,20 @@
 
       // Track playbackRate changes to override page scripts if they attempt to change it
       this.video.addEventListener("ratechange", () => {
-        if (Math.abs(this.video.playbackRate - this.state.speed) > 0.01) {
-          this.video.playbackRate = this.state.speed;
+        const effectiveSpeed = this.getEffectiveSpeed();
+        if (Math.abs(this.video.playbackRate - effectiveSpeed) > 0.01) {
+          this.video.playbackRate = effectiveSpeed;
+        }
+      });
+      this.video.addEventListener("play", () => {
+        if (navigator.userActivation?.isActive) {
+          this.applyAudioSettings(true);
+        }
+      });
+      this.video.addEventListener("emptied", () => {
+        if (!this.audioContext) {
+          this.audioUnavailable = false;
+          this.audioProcessingError = false;
         }
       });
     }
@@ -184,6 +264,23 @@
             0.1,
             Math.min(5.0, Number(this.state.speed) || 1),
           );
+          this.state.audioLevel = Math.max(
+            100,
+            Math.min(300, Number(this.state.audioLevel) || 100),
+          );
+          this.state.equalizerEnabled = this.state.equalizerEnabled === true;
+          if (
+            this.state.equalizerPreset !== "Custom" &&
+            !EQUALIZER_PRESETS[this.state.equalizerPreset]
+          ) {
+            this.state.equalizerPreset = "Flat";
+          }
+          for (const band of ["bass", "mid", "treble"]) {
+            this.state[band] = Math.max(
+              -12,
+              Math.min(12, Number(this.state[band]) || 0),
+            );
+          }
           resolve();
         });
       });
@@ -210,11 +307,211 @@
       this.video.style.filter = filters;
 
       // 3. Playback Speed
-      if (this.video.playbackRate !== this.state.speed) {
-        this.video.playbackRate = this.state.speed;
+      const effectiveSpeed = this.getEffectiveSpeed();
+      if (this.video.playbackRate !== effectiveSpeed) {
+        this.video.playbackRate = effectiveSpeed;
       }
 
+      this.applyAudioSettings();
       this.updateUI();
+    }
+
+    ensureAudioGraph() {
+      if (this.audioContext) return;
+
+      if (this.video.mediaKeys) {
+        throw new Error("Audio processing is unavailable for DRM-protected video.");
+      }
+
+      const sourceUrl = this.video.currentSrc || this.video.src;
+      if (!sourceUrl && !this.video.srcObject) {
+        throw new Error("Start the video before enabling audio processing.");
+      }
+
+      if (sourceUrl) {
+        const mediaUrl = new URL(sourceUrl, window.location.href);
+        if (
+          mediaUrl.origin !== window.location.origin &&
+          !this.video.crossOrigin
+        ) {
+          throw new Error("This video does not permit audio processing (CORS).");
+        }
+      }
+
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error("Web Audio is not supported in this browser.");
+      }
+
+      const context = new AudioContextClass();
+      let source;
+      try {
+        source = context.createMediaElementSource(this.video);
+        const bass = context.createBiquadFilter();
+        bass.type = "lowshelf";
+        bass.frequency.value = 160;
+        const mid = context.createBiquadFilter();
+        mid.type = "peaking";
+        mid.frequency.value = 1000;
+        mid.Q.value = 0.8;
+        const treble = context.createBiquadFilter();
+        treble.type = "highshelf";
+        treble.frequency.value = 5000;
+        const gain = context.createGain();
+        const compressor = context.createDynamicsCompressor();
+        compressor.threshold.value = -3;
+        compressor.knee.value = 6;
+        compressor.ratio.value = 4;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.25;
+
+        source.connect(bass);
+        bass.connect(mid);
+        mid.connect(treble);
+        treble.connect(gain);
+        gain.connect(compressor);
+        compressor.connect(context.destination);
+
+        this.audioContext = context;
+        this.audioGain = gain;
+        this.audioCompressor = compressor;
+        this.equalizerFilters = { bass, mid, treble };
+      } catch (error) {
+        if (source) {
+          try {
+            source.connect(context.destination);
+          } catch {
+            // The media element will remain subject to browser audio restrictions.
+          }
+        }
+        context.close().catch(() => {});
+        throw error;
+      }
+    }
+
+    applyAudioSettings(initialize = false, forceNeutral = false) {
+      if (!this.enabled && !forceNeutral) return;
+
+      const audioLevel = forceNeutral ? 100 : this.state.audioLevel;
+      const equalizerEnabled = forceNeutral
+        ? false
+        : this.state.equalizerEnabled;
+      const requiresAudioGraph = audioLevel !== 100 || equalizerEnabled;
+
+      if (
+        !this.audioContext &&
+        !this.audioUnavailable &&
+        initialize &&
+        requiresAudioGraph
+      ) {
+        try {
+          this.ensureAudioGraph();
+          this.audioProcessingError = false;
+        } catch (error) {
+          this.audioUnavailable = true;
+          if (!this.audioProcessingError) {
+            this.showTemporaryToast(error.message);
+            this.audioProcessingError = true;
+          }
+          return;
+        }
+      }
+
+      if (!this.audioContext) return;
+
+      const now = this.audioContext.currentTime;
+      this.audioGain.gain.setTargetAtTime(audioLevel / 100, now, 0.015);
+      const isBoosted = audioLevel > 100;
+      this.audioCompressor.threshold.setTargetAtTime(
+        isBoosted ? -3 : 0,
+        now,
+        0.015,
+      );
+      this.audioCompressor.knee.setTargetAtTime(isBoosted ? 6 : 0, now, 0.015);
+      this.audioCompressor.ratio.setTargetAtTime(isBoosted ? 4 : 1, now, 0.015);
+      for (const band of ["bass", "mid", "treble"]) {
+        this.equalizerFilters[band].gain.setTargetAtTime(
+          equalizerEnabled ? this.state[band] : 0,
+          now,
+          0.015,
+        );
+      }
+      if (this.audioContext.state === "suspended") {
+        this.audioContext.resume().catch(() => {});
+      }
+    }
+
+    setAudioValue(key, value) {
+      if (key === "equalizerEnabled") {
+        this.state[key] = value === true;
+      } else if (key === "equalizerPreset") {
+        const preset = EQUALIZER_PRESETS[value];
+        if (!preset) return;
+        this.state.equalizerPreset = value;
+        Object.assign(this.state, preset);
+        this.state.equalizerEnabled = true;
+      } else {
+        const bounds = key === "audioLevel" ? [100, 300] : [-12, 12];
+        this.state[key] = Math.max(
+          bounds[0],
+          Math.min(bounds[1], Number(value)),
+        );
+        if (["bass", "mid", "treble"].includes(key)) {
+          this.state.equalizerPreset = "Custom";
+        }
+      }
+      this.applyAudioSettings(true);
+      this.saveSettings();
+    }
+
+    getEffectiveSpeed() {
+      return this.temporaryBoostSources.size > 0 ? 2 : this.state.speed;
+    }
+
+    setTemporaryBoost(source, active) {
+      if (active) {
+        if (
+          !this.enabled ||
+          this.temporaryBoostSources.has(source) ||
+          this.temporaryBoostTimers.has(source)
+        ) {
+          return;
+        }
+
+        const timer = setTimeout(() => {
+          this.temporaryBoostTimers.delete(source);
+          if (!this.enabled) return;
+
+          const wasBoosted = this.temporaryBoostSources.size > 0;
+          this.temporaryBoostSources.add(source);
+          if (!wasBoosted) {
+            this.applySettings();
+            this.showTemporaryToast("2x speed", 0);
+          }
+        }, TEMPORARY_BOOST_DELAY);
+        this.temporaryBoostTimers.set(source, timer);
+        return;
+      }
+
+      const timer = this.temporaryBoostTimers.get(source);
+      if (timer) {
+        clearTimeout(timer);
+        this.temporaryBoostTimers.delete(source);
+      }
+
+      if (!this.temporaryBoostSources.delete(source)) return;
+      if (this.temporaryBoostSources.size > 0) return;
+      this.applySettings();
+      this.hideToast();
+    }
+
+    clearTemporaryBoost() {
+      this.temporaryBoostTimers.forEach((timer) => clearTimeout(timer));
+      this.temporaryBoostTimers.clear();
+      if (this.temporaryBoostSources.size === 0) return;
+      this.temporaryBoostSources.clear();
+      this.applySettings();
+      this.hideToast();
     }
 
     adjustValue(key, delta) {
@@ -255,6 +552,8 @@
 
       this.enabled = enabled;
       if (!enabled) {
+        this.clearTemporaryBoost();
+        this.applyAudioSettings(false, true);
         this.menuOpen = false;
         this.video.style.transform = this.originalStyles.transform;
         this.video.style.transformOrigin = this.originalStyles.transformOrigin;
@@ -284,20 +583,31 @@
       }
     }
 
-    showTemporaryToast(message) {
+    showTemporaryToast(message, duration = 1500) {
       if (!this.toast) return;
+      if (this.temporaryBoostSources.size > 0 && message !== "2x speed") return;
       this.toast.textContent = message;
       this.toast.style.display = "block";
       this.toast.classList.add("visible");
 
       if (this.toastTimeout) {
         clearTimeout(this.toastTimeout);
+        this.toastTimeout = null;
       }
 
-      this.toastTimeout = setTimeout(() => {
-        this.toast.classList.remove("visible");
-        this.toast.style.display = "none";
-      }, 1500);
+      if (duration > 0) {
+        this.toastTimeout = setTimeout(() => this.hideToast(), duration);
+      }
+    }
+
+    hideToast() {
+      if (this.toastTimeout) {
+        clearTimeout(this.toastTimeout);
+        this.toastTimeout = null;
+      }
+      if (!this.toast) return;
+      this.toast.classList.remove("visible");
+      this.toast.style.display = "none";
     }
 
     buildUI() {
@@ -500,6 +810,38 @@
           background: rgba(255, 255, 255, 0.2);
         }
 
+        .vsc-select {
+          width: 100%;
+          margin: 4px 0 12px;
+          padding: 7px 8px;
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          border-radius: 5px;
+          background: #20242b;
+          color: #ffffff;
+          font-size: 12px;
+        }
+        .vsc-audio-toggle {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 4px 0 12px;
+          font-size: 13px;
+        }
+        .vsc-audio-toggle input {
+          width: 16px;
+          height: 16px;
+          accent-color: #38bdf8;
+        }
+        .vsc-eq-band {
+          margin: 8px 0 2px;
+        }
+        .vsc-eq-band.disabled {
+          opacity: 0.45;
+        }
+        .vsc-eq-band .vsc-slider-info {
+          margin-bottom: 2px;
+        }
+
         /* Speed Options */
         .vsc-speed-list {
           display: flex;
@@ -639,6 +981,14 @@
           <span>Speed</span>
           <span class="vsc-row-val">${this.state.speed === 1.0 ? "Normal" : this.state.speed + "x"}</span>
         </div>
+        <div class="vsc-row" data-sub="audio-level">
+          <span>Volume Boost</span>
+          <span class="vsc-row-val">${this.state.audioLevel}%</span>
+        </div>
+        <div class="vsc-row" data-sub="equalizer">
+          <span>Equalizer</span>
+          <span class="vsc-row-val">${this.state.equalizerEnabled ? "On" : "Off"}</span>
+        </div>
       `;
 
       // Attach row listeners
@@ -655,6 +1005,124 @@
       if (!sub) return;
 
       const capitalized = sub.charAt(0).toUpperCase() + sub.slice(1);
+
+      if (sub === "audio-level") {
+        this.container.innerHTML = `
+          <div class="vsc-header">
+            <span class="vsc-header-back">‹</span> Volume Boost
+          </div>
+          <div class="vsc-slider-box">
+            <div class="vsc-slider-info">
+              <span>Range: 100% - 300%</span>
+              <span class="vsc-current-display">${this.state.audioLevel}%</span>
+            </div>
+            <input type="range" class="vsc-slider" min="100" max="300" step="5" value="${this.state.audioLevel}">
+            <div class="vsc-presets">
+              <button class="vsc-btn" data-level="100">100%</button>
+              <button class="vsc-btn" data-level="150">150%</button>
+              <button class="vsc-btn" data-level="200">200%</button>
+              <button class="vsc-btn" data-level="300">300%</button>
+            </div>
+          </div>
+        `;
+        this.container
+          .querySelector(".vsc-header")
+          .addEventListener("click", () => {
+            this.activeSubmenu = null;
+            this.renderMainMenu();
+          });
+
+        const slider = this.container.querySelector(".vsc-slider");
+        const display = this.container.querySelector(".vsc-current-display");
+        const updateVolumeUI = () => {
+          display.textContent = `${this.state.audioLevel}%`;
+          slider.value = this.state.audioLevel;
+        };
+        slider.addEventListener("input", (event) => {
+          this.setAudioValue("audioLevel", event.target.value);
+          updateVolumeUI();
+        });
+        this.container.querySelectorAll("[data-level]").forEach((button) => {
+          button.addEventListener("click", () => {
+            this.setAudioValue("audioLevel", button.dataset.level);
+            updateVolumeUI();
+          });
+        });
+        return;
+      }
+
+      if (sub === "equalizer") {
+        const bands = ["bass", "mid", "treble"];
+        const bandLabels = { bass: "Bass", mid: "Mid", treble: "Treble" };
+        this.container.innerHTML = `
+          <div class="vsc-header">
+            <span class="vsc-header-back">‹</span> Equalizer
+          </div>
+          <div class="vsc-slider-box">
+            <label class="vsc-audio-toggle" for="vsc-eq-enabled">
+              <span>Equalizer enabled</span>
+              <input id="vsc-eq-enabled" type="checkbox" ${this.state.equalizerEnabled ? "checked" : ""}>
+            </label>
+            <div class="vsc-slider-info"><span>Preset</span></div>
+            <select class="vsc-select" aria-label="Equalizer preset">
+              ${this.state.equalizerPreset === "Custom" ? '<option value="Custom" selected>Custom</option>' : ""}
+              ${Object.keys(EQUALIZER_PRESETS)
+                .map(
+                  (preset) =>
+                    `<option value="${preset}" ${this.state.equalizerPreset === preset ? "selected" : ""}>${preset}</option>`,
+                )
+                .join("")}
+            </select>
+            ${bands
+              .map(
+                (band) => `
+                  <div class="vsc-eq-band ${this.state.equalizerEnabled ? "" : "disabled"}">
+                    <div class="vsc-slider-info">
+                      <span>${bandLabels[band]}</span>
+                      <span data-display="${band}">${this.state[band]} dB</span>
+                    </div>
+                    <input type="range" class="vsc-slider" data-band="${band}" min="-12" max="12" step="1" value="${this.state[band]}" ${this.state.equalizerEnabled ? "" : "disabled"}>
+                  </div>
+                `,
+              )
+              .join("")}
+          </div>
+        `;
+        this.container
+          .querySelector(".vsc-header")
+          .addEventListener("click", () => {
+            this.activeSubmenu = null;
+            this.renderMainMenu();
+          });
+        this.container
+          .querySelector("#vsc-eq-enabled")
+          .addEventListener("change", (event) => {
+            this.setAudioValue("equalizerEnabled", event.target.checked);
+            this.renderSubmenu();
+          });
+        this.container
+          .querySelector(".vsc-select")
+          .addEventListener("change", (event) => {
+            this.setAudioValue("equalizerPreset", event.target.value);
+            this.renderSubmenu();
+          });
+        this.container.querySelectorAll("[data-band]").forEach((slider) => {
+          slider.addEventListener("input", (event) => {
+            const band = event.target.dataset.band;
+            this.setAudioValue(band, event.target.value);
+            const presetSelect = this.container.querySelector(".vsc-select");
+            if (!presetSelect.querySelector('option[value="Custom"]')) {
+              const customOption = document.createElement("option");
+              customOption.value = "Custom";
+              customOption.textContent = "Custom";
+              presetSelect.prepend(customOption);
+            }
+            presetSelect.value = "Custom";
+            this.container.querySelector(`[data-display="${band}"]`).textContent = `${this.state[band]} dB`;
+          });
+        });
+        return;
+      }
 
       if (sub === "speed") {
         this.container.innerHTML = `
