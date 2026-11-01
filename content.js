@@ -144,7 +144,10 @@
     "mousedown",
     (e) => {
       if (!extensionEnabled || e.button !== 0) return;
-      const targetVideo = getTargetVideo();
+      const targetVideo = e
+        .composedPath()
+        .find((target) => target instanceof HTMLVideoElement);
+      if (!targetVideo) return;
       const controller = activeControllers.get(targetVideo);
       if (controller) {
         controller.applyAudioSettings(true);
