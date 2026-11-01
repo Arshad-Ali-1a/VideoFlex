@@ -34,6 +34,8 @@
     bass: 0,
     mid: 0,
     treble: 0,
+    ambientEnabled: false,
+    ambientDepth: 65,
   };
   const EQUALIZER_PRESETS = {
     Flat: { bass: 0, mid: 0, treble: 0 },
@@ -216,6 +218,9 @@
       this.audioGain = null;
       this.audioCompressor = null;
       this.equalizerFilters = null;
+      this.ambientPanner = null;
+      this.ambientDryGain = null;
+      this.ambientWetGain = null;
       this.audioProcessingError = false;
       this.audioUnavailable = false;
 
@@ -269,6 +274,11 @@
             Math.min(300, Number(this.state.audioLevel) || 100),
           );
           this.state.equalizerEnabled = this.state.equalizerEnabled === true;
+          this.state.ambientEnabled = this.state.ambientEnabled === true;
+          this.state.ambientDepth = Math.max(
+            0,
+            Math.min(100, Number(this.state.ambientDepth) || 0),
+          );
           if (
             this.state.equalizerPreset !== "Custom" &&
             !EQUALIZER_PRESETS[this.state.equalizerPreset]
@@ -320,7 +330,9 @@
       if (this.audioContext) return;
 
       if (this.video.mediaKeys) {
-        throw new Error("Audio processing is unavailable for DRM-protected video.");
+        throw new Error(
+          "Audio processing is unavailable for DRM-protected video.",
+        );
       }
 
       const sourceUrl = this.video.currentSrc || this.video.src;
@@ -334,11 +346,14 @@
           mediaUrl.origin !== window.location.origin &&
           !this.video.crossOrigin
         ) {
-          throw new Error("This video does not permit audio processing (CORS).");
+          throw new Error(
+            "This video does not permit audio processing (CORS).",
+          );
         }
       }
 
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      const AudioContextClass =
+        window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) {
         throw new Error("Web Audio is not supported in this browser.");
       }
@@ -359,6 +374,19 @@
         treble.frequency.value = 5000;
         const gain = context.createGain();
         const compressor = context.createDynamicsCompressor();
+        const ambientPanner = context.createPanner();
+        ambientPanner.panningModel = "HRTF";
+        ambientPanner.distanceModel = "inverse";
+        ambientPanner.refDistance = 1;
+        ambientPanner.maxDistance = 10000;
+        ambientPanner.rolloffFactor = 0;
+        ambientPanner.positionX.value = 0;
+        ambientPanner.positionY.value = 0;
+        ambientPanner.positionZ.value = 1;
+        const ambientDryGain = context.createGain();
+        const ambientWetGain = context.createGain();
+        ambientDryGain.gain.value = 1;
+        ambientWetGain.gain.value = 0;
         compressor.threshold.value = -3;
         compressor.knee.value = 6;
         compressor.ratio.value = 4;
@@ -370,12 +398,19 @@
         mid.connect(treble);
         treble.connect(gain);
         gain.connect(compressor);
-        compressor.connect(context.destination);
+        compressor.connect(ambientDryGain);
+        compressor.connect(ambientPanner);
+        ambientPanner.connect(ambientWetGain);
+        ambientDryGain.connect(context.destination);
+        ambientWetGain.connect(context.destination);
 
         this.audioContext = context;
         this.audioGain = gain;
         this.audioCompressor = compressor;
         this.equalizerFilters = { bass, mid, treble };
+        this.ambientPanner = ambientPanner;
+        this.ambientDryGain = ambientDryGain;
+        this.ambientWetGain = ambientWetGain;
       } catch (error) {
         if (source) {
           try {
@@ -396,7 +431,9 @@
       const equalizerEnabled = forceNeutral
         ? false
         : this.state.equalizerEnabled;
-      const requiresAudioGraph = audioLevel !== 100 || equalizerEnabled;
+      const ambientEnabled = forceNeutral ? false : this.state.ambientEnabled;
+      const requiresAudioGraph =
+        audioLevel !== 100 || equalizerEnabled || ambientEnabled;
 
       if (
         !this.audioContext &&
@@ -436,13 +473,16 @@
           0.015,
         );
       }
+      const ambientMix = ambientEnabled ? this.state.ambientDepth / 100 : 0;
+      this.ambientDryGain.gain.setTargetAtTime(1 - ambientMix, now, 0.015);
+      this.ambientWetGain.gain.setTargetAtTime(ambientMix, now, 0.015);
       if (this.audioContext.state === "suspended") {
         this.audioContext.resume().catch(() => {});
       }
     }
 
     setAudioValue(key, value) {
-      if (key === "equalizerEnabled") {
+      if (key === "equalizerEnabled" || key === "ambientEnabled") {
         this.state[key] = value === true;
       } else if (key === "equalizerPreset") {
         const preset = EQUALIZER_PRESETS[value];
@@ -451,7 +491,12 @@
         Object.assign(this.state, preset);
         this.state.equalizerEnabled = true;
       } else {
-        const bounds = key === "audioLevel" ? [100, 300] : [-12, 12];
+        const bounds =
+          key === "audioLevel"
+            ? [100, 300]
+            : key === "ambientDepth"
+              ? [0, 100]
+              : [-12, 12];
         this.state[key] = Math.max(
           bounds[0],
           Math.min(bounds[1], Number(value)),
@@ -987,7 +1032,7 @@
         </div>
         <div class="vsc-row" data-sub="equalizer">
           <span>Equalizer</span>
-          <span class="vsc-row-val">${this.state.equalizerEnabled ? "On" : "Off"}</span>
+          <span class="vsc-row-val">${this.state.equalizerEnabled ? "EQ On" : "EQ Off"}${this.state.ambientEnabled ? " · Ambient" : ""}</span>
         </div>
       `;
 
@@ -1056,7 +1101,7 @@
         const bandLabels = { bass: "Bass", mid: "Mid", treble: "Treble" };
         this.container.innerHTML = `
           <div class="vsc-header">
-            <span class="vsc-header-back">‹</span> Equalizer
+            <span class="vsc-header-back">‹</span> Equalizer &amp; Ambient
           </div>
           <div class="vsc-slider-box">
             <label class="vsc-audio-toggle" for="vsc-eq-enabled">
@@ -1086,6 +1131,17 @@
                 `,
               )
               .join("")}
+            <div class="vsc-eq-band ${this.state.ambientEnabled ? "" : "disabled"}">
+              <label class="vsc-audio-toggle" for="vsc-ambient-enabled">
+                <span>Ambient</span>
+                <input id="vsc-ambient-enabled" type="checkbox" ${this.state.ambientEnabled ? "checked" : ""}>
+              </label>
+              <div class="vsc-slider-info">
+                <span>Spatial depth</span>
+                <span data-display="ambientDepth">${this.state.ambientDepth}%</span>
+              </div>
+              <input type="range" class="vsc-slider" data-band="ambientDepth" min="0" max="100" step="5" value="${this.state.ambientDepth}" ${this.state.ambientEnabled ? "" : "disabled"}>
+            </div>
           </div>
         `;
         this.container
@@ -1101,6 +1157,12 @@
             this.renderSubmenu();
           });
         this.container
+          .querySelector("#vsc-ambient-enabled")
+          .addEventListener("change", (event) => {
+            this.setAudioValue("ambientEnabled", event.target.checked);
+            this.renderSubmenu();
+          });
+        this.container
           .querySelector(".vsc-select")
           .addEventListener("change", (event) => {
             this.setAudioValue("equalizerPreset", event.target.value);
@@ -1110,6 +1172,12 @@
           slider.addEventListener("input", (event) => {
             const band = event.target.dataset.band;
             this.setAudioValue(band, event.target.value);
+            if (band === "ambientDepth") {
+              this.container.querySelector(
+                '[data-display="ambientDepth"]',
+              ).textContent = `${this.state.ambientDepth}%`;
+              return;
+            }
             const presetSelect = this.container.querySelector(".vsc-select");
             if (!presetSelect.querySelector('option[value="Custom"]')) {
               const customOption = document.createElement("option");
@@ -1118,7 +1186,9 @@
               presetSelect.prepend(customOption);
             }
             presetSelect.value = "Custom";
-            this.container.querySelector(`[data-display="${band}"]`).textContent = `${this.state[band]} dB`;
+            this.container.querySelector(
+              `[data-display="${band}"]`,
+            ).textContent = `${this.state[band]} dB`;
           });
         });
         return;
